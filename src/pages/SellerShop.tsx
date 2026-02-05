@@ -1,17 +1,18 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
-import { Link } from "react-router-dom";
-import { listProducts, type Product } from "../api/products.ts";
+import { listProducts, type Product } from "../api/products";
 import { createOrder } from "../api/order";
+import AppShell from "../components/AppShell";
+import { ui } from "../ui/ui";
 
 function formatKsh(amount: number) {
   return `KSh ${Number(amount || 0).toLocaleString("en-KE")}`;
 }
 
-const SELLER_WHATSAPP = "254700000000"; // replace with your seller number (no +)
+const SELLER_WHATSAPP = "254700000000"; // replace (no +)
 
 export default function SellerShop() {
-  const { user, isAdmin, logout } = useAuth();
+  const { user, isAdmin } = useAuth();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -20,22 +21,26 @@ export default function SellerShop() {
   const [cart, setCart] = useState<Record<number, number>>({});
   const [deliveryLocation, setDeliveryLocation] = useState("Nairobi, Kenya");
   const [note, setNote] = useState("");
-  const [toast, setToast] = useState<string | null>(null);
 
+  const [toast, setToast] = useState<string | null>(null);
   const showToast = (msg: string) => {
     setToast(msg);
     window.clearTimeout((showToast as any)._t);
     (showToast as any)._t = window.setTimeout(() => setToast(null), 2500);
   };
 
+  const refreshProducts = async () => {
+    const ps = await listProducts();
+    setProducts(ps);
+  };
+
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
-        const ps = await listProducts();
-        setProducts(ps);
+        await refreshProducts();
       } catch (e: any) {
-        showToast(e.message || "Failed to load products");
+        showToast(e?.message || "Failed to load products");
       } finally {
         setLoading(false);
       }
@@ -67,6 +72,11 @@ export default function SellerShop() {
     });
   };
 
+  const clearCart = () => {
+    setCart({});
+    setNote("");
+  };
+
   const buildWhatsAppMessage = () => {
     const lines = [
       `Hello, I want to order from Tabby Shop.`,
@@ -77,8 +87,7 @@ export default function SellerShop() {
       ``,
       `Items:`,
       ...cartItems.map(
-        (it) =>
-          `- ${it.product.name} x${it.qty} = ${formatKsh(it.product.price_int * it.qty)}`
+        (it) => `- ${it.product.name} x${it.qty} = ${formatKsh(it.product.price_int * it.qty)}`
       ),
       ``,
       `Total: ${formatKsh(totalInt)}`,
@@ -103,13 +112,10 @@ export default function SellerShop() {
 
       const d = await createOrder(payload);
       showToast(`Order placed! #${d.order.id} (${d.order.status})`);
-      setCart({});
-      setNote("");
-      // refresh products (stock changed)
-      const ps = await listProducts();
-      setProducts(ps);
+      clearCart();
+      await refreshProducts(); // stock changed
     } catch (e: any) {
-      showToast(e.message || "Order failed");
+      showToast(e?.message || "Order failed");
     }
   };
 
@@ -117,7 +123,7 @@ export default function SellerShop() {
     if (cartItems.length === 0) return showToast("Cart is empty.");
     if (!deliveryLocation.trim()) return showToast("Enter delivery location.");
 
-    // OPTIONAL: create a pending order record in DB
+    // optional: create pending order record
     try {
       await createOrder({
         channel: "whatsapp",
@@ -126,16 +132,20 @@ export default function SellerShop() {
         items: cartItems.map((it) => ({ product_id: it.product.id, qty: it.qty })),
       });
     } catch {
-      // Even if DB fails, still allow WhatsApp message
+      // still allow WhatsApp even if DB fails
     }
 
     const msg = encodeURIComponent(buildWhatsAppMessage());
     const url = `https://wa.me/${SELLER_WHATSAPP}?text=${msg}`;
     window.open(url, "_blank", "noopener,noreferrer");
+    showToast("Opening WhatsApp…");
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100">
+    <AppShell
+      title="Tabby Shop"
+      subtitle={`Logged in as ${user?.name ?? "—"} (${user?.role ?? "—"})${isAdmin ? " • Admin access" : ""}`}
+    >
       {/* Toast */}
       {toast && (
         <div className="fixed top-4 right-4 z-[9999]">
@@ -145,42 +155,34 @@ export default function SellerShop() {
         </div>
       )}
 
-      {/* Top bar */}
-      <div className="sticky top-0 z-20 bg-white/70 backdrop-blur border-b border-slate-200">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between gap-3">
-          <div>
-            <div className="font-extrabold text-xl">Tabby Shop</div>
-            <div className="text-xs text-slate-600">
-              Logged in as <span className="font-bold">{user?.name}</span> ({user?.role})
+      <div className="grid lg:grid-cols-3 gap-6">
+        {/* Products */}
+        <section className={`lg:col-span-2 ${ui.card} ${ui.cardPad}`}>
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <div className={ui.h2}>Products</div>
+              <div className={ui.sub}>Choose quantities and checkout. Out-of-stock items are disabled.</div>
             </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {isAdmin && (
-              <Link className="px-3 py-2 rounded-xl bg-slate-900 text-white font-semibold" to="/admin">
-                Admin Dashboard
-              </Link>
-            )}
             <button
-              className="px-3 py-2 rounded-xl bg-rose-600 text-white font-semibold"
-              onClick={logout}
+              className={`${ui.btn} ${ui.btnSoft} py-2`}
+              onClick={async () => {
+                try {
+                  setLoading(true);
+                  await refreshProducts();
+                } catch (e: any) {
+                  showToast(e?.message || "Refresh failed");
+                } finally {
+                  setLoading(false);
+                }
+              }}
+              disabled={loading}
             >
-              Logout
+              {loading ? "Loading…" : "Refresh"}
             </button>
           </div>
-        </div>
-      </div>
-
-      <main className="max-w-6xl mx-auto px-4 py-8 grid lg:grid-cols-3 gap-6">
-        {/* Products */}
-        <section className="lg:col-span-2 bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5">
-          <h2 className="text-2xl font-extrabold">Products</h2>
-          <p className="text-sm text-slate-600 mt-1">
-            Choose quantities and checkout. Out-of-stock items are disabled.
-          </p>
 
           {loading ? (
-            <div className="mt-6 text-slate-600">Loading...</div>
+            <div className="mt-6 text-slate-600">Loading…</div>
           ) : products.length === 0 ? (
             <div className="mt-6 text-slate-600">No products yet.</div>
           ) : (
@@ -192,38 +194,41 @@ export default function SellerShop() {
                 return (
                   <div
                     key={p.id}
-                    className="rounded-2xl border border-slate-200 bg-white overflow-hidden"
+                    className="rounded-2xl border border-slate-200 bg-white overflow-hidden hover:shadow-sm transition"
                   >
-                    <img
-                      src={p.image}
-                      className="h-40 w-full object-cover"
-                      alt={p.name}
-                      loading="lazy"
-                    />
+                    {p.image ? (
+                      <img
+                        src={p.image}
+                        className="h-40 w-full object-cover bg-slate-100"
+                        alt={p.name}
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="h-40 w-full bg-slate-100 flex items-center justify-center text-slate-400 text-sm">
+                        No image
+                      </div>
+                    )}
+
                     <div className="p-4">
                       <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="font-extrabold">{p.name}</div>
-                          <div className="text-sm text-slate-600 line-clamp-2">
-                            {p.description}
-                          </div>
+                        <div className="min-w-0">
+                          <div className="font-extrabold truncate">{p.name}</div>
+                          <div className="text-sm text-slate-600 line-clamp-2">{p.description}</div>
                         </div>
-                        <div className="font-extrabold text-blue-700">
+                        <div className="font-extrabold text-blue-700 whitespace-nowrap">
                           {formatKsh(p.price_int)}
                         </div>
                       </div>
 
-                      <div className="mt-3 flex items-center justify-between">
+                      <div className="mt-3 flex items-center justify-between gap-3">
                         <div className="text-xs text-slate-600">
                           Stock:{" "}
-                          <span className={`font-bold ${out ? "text-rose-600" : ""}`}>
-                            {p.stock}
-                          </span>
+                          <span className={`font-bold ${out ? "text-rose-600" : ""}`}>{p.stock}</span>
                         </div>
 
                         <div className="flex items-center gap-2">
                           <button
-                            className="px-3 py-2 rounded-xl bg-slate-100 font-bold disabled:opacity-50"
+                            className={`${ui.btn} ${ui.btnSoft} px-3 py-2`}
                             disabled={qty <= 0}
                             onClick={() => setQty(p.id, qty - 1)}
                           >
@@ -231,7 +236,7 @@ export default function SellerShop() {
                           </button>
 
                           <input
-                            className="w-14 text-center rounded-xl border border-slate-200 py-2"
+                            className="w-16 text-center rounded-xl border border-slate-200 py-2 outline-none focus:ring-4 focus:ring-slate-200"
                             type="number"
                             min={0}
                             max={p.stock}
@@ -241,7 +246,7 @@ export default function SellerShop() {
                           />
 
                           <button
-                            className="px-3 py-2 rounded-xl bg-slate-900 text-white font-bold disabled:opacity-50"
+                            className={`${ui.btn} ${ui.btnPrimary} px-3 py-2`}
                             disabled={out || qty >= p.stock}
                             onClick={() => setQty(p.id, qty + 1)}
                           >
@@ -251,7 +256,7 @@ export default function SellerShop() {
                       </div>
 
                       <button
-                        className="mt-3 w-full px-4 py-2.5 rounded-xl font-extrabold bg-blue-600 text-white disabled:opacity-50"
+                        className={`mt-3 w-full ${ui.btn} ${ui.btnPrimary}`}
                         disabled={out}
                         onClick={() => setQty(p.id, Math.max(1, qty || 0))}
                       >
@@ -266,15 +271,25 @@ export default function SellerShop() {
         </section>
 
         {/* Checkout */}
-        <aside className="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5 h-fit">
-          <h2 className="text-xl font-extrabold">Checkout</h2>
+        <aside className={`${ui.card} ${ui.cardPad} h-fit`}>
+          <div className="flex items-center justify-between gap-3">
+            <div className={ui.h2}>Checkout</div>
+            <button
+              className={`${ui.btn} ${ui.btnSoft} py-2`}
+              onClick={clearCart}
+              disabled={cartItems.length === 0 && !note}
+              title="Clear cart"
+            >
+              Clear
+            </button>
+          </div>
 
           <div className="mt-4">
             <label className="text-sm font-semibold text-slate-700">
               Delivery location (auto included in WhatsApp order)
             </label>
             <input
-              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5"
+              className={`mt-1 ${ui.input}`}
               value={deliveryLocation}
               onChange={(e) => setDeliveryLocation(e.target.value)}
             />
@@ -283,7 +298,7 @@ export default function SellerShop() {
           <div className="mt-4">
             <label className="text-sm font-semibold text-slate-700">Note (optional)</label>
             <textarea
-              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5"
+              className={`mt-1 ${ui.textarea}`}
               rows={3}
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -296,15 +311,15 @@ export default function SellerShop() {
             {cartItems.length === 0 ? (
               <div className="text-sm text-slate-600 mt-2">No items yet.</div>
             ) : (
-              <div className="mt-2 space-y-2">
+              <div className="mt-3 space-y-2">
                 {cartItems.map((it) => (
                   <div key={it.product.id} className="flex justify-between text-sm">
                     <div className="text-slate-700">
-                      {it.product.name} x{it.qty}
+                      {it.product.name}{" "}
+                      <span className="text-slate-400">×</span>
+                      <span className="font-bold ml-1">{it.qty}</span>
                     </div>
-                    <div className="font-bold">
-                      {formatKsh(it.product.price_int * it.qty)}
-                    </div>
+                    <div className="font-bold">{formatKsh(it.product.price_int * it.qty)}</div>
                   </div>
                 ))}
               </div>
@@ -318,7 +333,7 @@ export default function SellerShop() {
 
           <div className="mt-4 grid gap-3">
             <button
-              className="w-full px-4 py-2.5 rounded-xl font-extrabold bg-emerald-600 text-white disabled:opacity-50"
+              className={`w-full ${ui.btn} ${ui.btnGood}`}
               disabled={cartItems.length === 0}
               onClick={confirmInApp}
             >
@@ -326,7 +341,7 @@ export default function SellerShop() {
             </button>
 
             <button
-              className="w-full px-4 py-2.5 rounded-xl font-extrabold bg-slate-900 text-white disabled:opacity-50"
+              className={`w-full ${ui.btn} ${ui.btnPrimary}`}
               disabled={cartItems.length === 0}
               onClick={sendWhatsApp}
             >
@@ -338,11 +353,7 @@ export default function SellerShop() {
             Tip: “Confirm in App” deducts stock immediately. WhatsApp orders are confirmed by admin.
           </div>
         </aside>
-      </main>
-
-      <footer className="max-w-6xl mx-auto px-4 pb-10 text-xs text-slate-500">
-        © 2026 Tabby
-      </footer>
-    </div>
+      </div>
+    </AppShell>
   );
 }
