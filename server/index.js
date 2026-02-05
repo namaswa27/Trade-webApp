@@ -1,3 +1,4 @@
+// server/index.js
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -26,11 +27,7 @@ function signAccess(user) {
 }
 
 function signRefresh(user) {
-  return jwt.sign(
-    { id: user.id },
-    process.env.REFRESH_TOKEN_SECRET,
-    { expiresIn: "14d" }
-  );
+  return jwt.sign({ id: user.id }, process.env.REFRESH_TOKEN_SECRET, { expiresIn: "14d" });
 }
 
 function requireAuth(req, res, next) {
@@ -50,6 +47,53 @@ function requireAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ message: "No user" });
   if (req.user.role !== "admin") return res.status(403).json({ message: "Admin only" });
   next();
+}
+
+// ---------- LOW STOCK HELPERS ----------
+async function maybeCreateLowStockAlert(productId, currentStock) {
+  // Get last restock baseline (stock AFTER restock)
+  const { rows: restocks } = await pool.query(
+    `SELECT baseline_stock
+     FROM product_restock_events
+     WHERE product_id=$1
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [productId]
+  );
+
+  if (!restocks.length) return null;
+
+  const baseline = Number(restocks[0].baseline_stock || 0);
+  if (!Number.isFinite(baseline) || baseline <= 0) return null;
+
+  const threshold = Math.max(0, Math.ceil(baseline * 0.3));
+
+  // If not low, no alert
+  if (Number(currentStock) > threshold) return null;
+
+  // If an open alert already exists, return it (don’t duplicate)
+  const { rows: openAlerts } = await pool.query(
+    `SELECT id, product_id, threshold_qty, created_at, acknowledged_at
+     FROM product_low_stock_alerts
+     WHERE product_id=$1 AND acknowledged_at IS NULL
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [productId]
+  );
+
+  if (openAlerts.length) {
+    return { ...openAlerts[0], current_stock: currentStock };
+  }
+
+  // Create alert
+  const { rows: created } = await pool.query(
+    `INSERT INTO product_low_stock_alerts(product_id, threshold_qty)
+     VALUES ($1,$2)
+     RETURNING id, product_id, threshold_qty, created_at, acknowledged_at`,
+    [productId, threshold]
+  );
+
+  return { ...created[0], current_stock: currentStock };
 }
 
 // ---------- AUTH ROUTES ----------
@@ -131,17 +175,8 @@ app.post("/api/auth/refresh", async (req, res) => {
   }
 });
 
-app.get("/api/auth/me", (req, res) => {
-  const auth = req.headers.authorization || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
-  if (!token) return res.status(401).json({ message: "No token" });
-
-  try {
-    const payload = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-    res.json({ user: payload });
-  } catch {
-    res.status(401).json({ message: "Invalid token" });
-  }
+app.get("/api/auth/me", requireAuth, (req, res) => {
+  res.json({ user: req.user });
 });
 
 app.post("/api/auth/logout", (req, res) => {
@@ -149,28 +184,225 @@ app.post("/api/auth/logout", (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- PRODUCTS (keep your existing ones) ----------
+// ---------- PRODUCTS ----------
 app.get("/api/products", requireAuth, async (req, res) => {
   const { rows } = await pool.query(
-    "SELECT id, name, price_int, description, image, stock, is_active FROM products WHERE is_active=true ORDER BY id DESC"
+    `SELECT id, name, price_int, description, image, stock, is_active
+     FROM products
+     WHERE is_active=true
+     ORDER BY id DESC`
   );
   res.json({ products: rows });
 });
 
-// --------- ORDERS FEATURE (NEW) ---------
+app.post("/api/products", requireAuth, requireAdmin, async (req, res) => {
+  const { name, price, description = "", image = "", stock = 0 } = req.body || {};
+  if (!name || price == null) return res.status(400).json({ message: "Missing name/price" });
 
-/**
- * Customer creates an order.
- * - channel: 'in_app' => deduct stock immediately
- * - channel: 'whatsapp' => do NOT deduct stock (admin will confirm later)
- */
+  const priceInt = Math.round(Number(price));
+  const stockInt = Math.max(0, Math.floor(Number(stock || 0)));
+
+  if (!Number.isFinite(priceInt) || priceInt <= 0) {
+    return res.status(400).json({ message: "Invalid price" });
+  }
+
+  const { rows } = await pool.query(
+    `INSERT INTO products(name, price_int, description, image, stock, is_active)
+     VALUES ($1,$2,$3,$4,$5,true)
+     RETURNING id, name, price_int, description, image, stock, is_active`,
+    [String(name).trim(), priceInt, String(description), String(image), stockInt]
+  );
+
+  const product = rows[0];
+
+  // create baseline restock event if initial stock > 0
+  if (product.stock > 0) {
+    await pool.query(
+      `INSERT INTO product_restock_events(product_id, baseline_stock) VALUES ($1,$2)`,
+      [product.id, product.stock]
+    );
+  }
+
+  res.json({ product });
+});
+
+app.put("/api/products/:id", requireAuth, requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const { name, price, description, image, stock, is_active } = req.body || {};
+
+  // if stock is set directly, get prev stock for restock baseline logic
+  let prevStock = null;
+  let newStock = null;
+
+  if (stock != null) {
+    const prev = await pool.query("SELECT stock FROM products WHERE id=$1", [id]);
+    if (!prev.rows.length) return res.status(404).json({ message: "Product not found" });
+    prevStock = Number(prev.rows[0].stock || 0);
+
+    const s = Math.max(0, Math.floor(Number(stock)));
+    if (!Number.isFinite(s)) return res.status(400).json({ message: "Invalid stock" });
+    newStock = s;
+  }
+
+  const fields = [];
+  const values = [];
+  let i = 1;
+
+  if (name != null) {
+    fields.push(`name=$${i++}`);
+    values.push(String(name).trim());
+  }
+
+  if (price != null) {
+    const p = Math.round(Number(price));
+    if (!Number.isFinite(p) || p <= 0) return res.status(400).json({ message: "Invalid price" });
+    fields.push(`price_int=$${i++}`);
+    values.push(p);
+  }
+
+  if (description != null) {
+    fields.push(`description=$${i++}`);
+    values.push(String(description));
+  }
+
+  if (image != null) {
+    fields.push(`image=$${i++}`);
+    values.push(String(image));
+  }
+
+  if (stock != null) {
+    fields.push(`stock=$${i++}`);
+    values.push(newStock);
+  }
+
+  if (is_active != null) {
+    fields.push(`is_active=$${i++}`);
+    values.push(!!is_active);
+  }
+
+  if (!fields.length) return res.status(400).json({ message: "No fields to update" });
+
+  values.push(id);
+
+  const { rows } = await pool.query(
+    `UPDATE products
+     SET ${fields.join(", ")}
+     WHERE id=$${i}
+     RETURNING id, name, price_int, description, image, stock, is_active`,
+    values
+  );
+
+  if (!rows.length) return res.status(404).json({ message: "Product not found" });
+
+  const updated = rows[0];
+
+  // If stock increased via PUT => treat as restock baseline
+  if (prevStock != null && newStock != null && newStock > prevStock) {
+    await pool.query(
+      `INSERT INTO product_restock_events(product_id, baseline_stock) VALUES ($1,$2)`,
+      [id, newStock]
+    );
+
+    // optional: auto-ack any open alert after restock
+    await pool.query(
+      `UPDATE product_low_stock_alerts
+       SET acknowledged_at=NOW()
+       WHERE product_id=$1 AND acknowledged_at IS NULL`,
+      [id]
+    );
+  }
+
+  res.json({ product: updated });
+});
+
+app.post("/api/products/:id/stock", requireAuth, requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const { delta } = req.body || {};
+  const d = Math.trunc(Number(delta));
+
+  if (!Number.isFinite(d) || d === 0) return res.status(400).json({ message: "Invalid delta" });
+
+  const { rows } = await pool.query(
+    `UPDATE products
+     SET stock = GREATEST(0, stock + $1)
+     WHERE id=$2
+     RETURNING id, name, price_int, description, image, stock, is_active`,
+    [d, id]
+  );
+
+  if (!rows.length) return res.status(404).json({ message: "Product not found" });
+
+  const product = rows[0];
+
+  // RESTOCK: baseline after restock
+  if (d > 0) {
+    await pool.query(
+      `INSERT INTO product_restock_events(product_id, baseline_stock) VALUES ($1,$2)`,
+      [id, product.stock]
+    );
+
+    await pool.query(
+      `UPDATE product_low_stock_alerts
+       SET acknowledged_at=NOW()
+       WHERE product_id=$1 AND acknowledged_at IS NULL`,
+      [id]
+    );
+
+    return res.json({ product, lowStockAlert: null });
+  }
+
+  // DEDUCT: check for low stock alert
+  const lowStockAlert = await maybeCreateLowStockAlert(id, product.stock);
+  return res.json({ product, lowStockAlert: lowStockAlert || null });
+});
+
+app.delete("/api/products/:id", requireAuth, requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const { rows } = await pool.query(
+    "UPDATE products SET is_active=false WHERE id=$1 RETURNING id",
+    [id]
+  );
+  if (!rows.length) return res.status(404).json({ message: "Product not found" });
+  res.json({ ok: true });
+});
+
+// ---------- LOW STOCK ALERTS (ADMIN) ----------
+app.get("/api/admin/low-stock-alerts", requireAuth, requireAdmin, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT a.id,
+            a.product_id,
+            p.name AS product_name,
+            p.stock AS current_stock,
+            a.threshold_qty,
+            a.created_at,
+            a.acknowledged_at
+     FROM product_low_stock_alerts a
+     JOIN products p ON p.id = a.product_id
+     WHERE a.acknowledged_at IS NULL
+     ORDER BY a.created_at DESC
+     LIMIT 200`
+  );
+
+  res.json({ alerts: rows });
+});
+
+app.post("/api/admin/low-stock-alerts/:id/ack", requireAuth, requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const { rows } = await pool.query(
+    `UPDATE product_low_stock_alerts
+     SET acknowledged_at = NOW()
+     WHERE id=$1 AND acknowledged_at IS NULL
+     RETURNING id`,
+    [id]
+  );
+
+  if (!rows.length) return res.status(404).json({ message: "Alert not found" });
+  res.json({ ok: true });
+});
+
+// ---------- ORDERS FEATURE ----------
 app.post("/api/orders", requireAuth, async (req, res) => {
-  const {
-    channel = "in_app",
-    delivery_location,
-    note = "",
-    items,
-  } = req.body || {};
+  const { channel = "in_app", delivery_location, note = "", items } = req.body || {};
 
   if (!delivery_location || !String(delivery_location).trim()) {
     return res.status(400).json({ message: "Delivery location is required" });
@@ -182,7 +414,6 @@ app.post("/api/orders", requireAuth, async (req, res) => {
     return res.status(400).json({ message: "Invalid channel" });
   }
 
-  // normalize items
   const normalized = items.map((it) => ({
     product_id: Number(it.product_id),
     qty: Math.max(1, Math.floor(Number(it.qty))),
@@ -199,7 +430,6 @@ app.post("/api/orders", requireAuth, async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // Lock product rows to prevent oversell (FOR UPDATE)
     const ids = normalized.map((x) => x.product_id);
     const { rows: products } = await client.query(
       `SELECT id, name, price_int, stock, is_active
@@ -209,23 +439,16 @@ app.post("/api/orders", requireAuth, async (req, res) => {
       [ids]
     );
 
-    if (products.length !== ids.length) {
-      throw new Error("One or more products not found");
-    }
+    if (products.length !== ids.length) throw new Error("One or more products not found");
 
     const prodById = new Map(products.map((p) => [Number(p.id), p]));
 
-    // Validate active + stock (only enforce stock for in_app)
     for (const it of normalized) {
       const p = prodById.get(it.product_id);
       if (!p || !p.is_active) throw new Error("A product is inactive/unavailable");
-
-      if (channel === "in_app" && Number(p.stock) < it.qty) {
-        throw new Error(`Not enough stock for: ${p.name}`);
-      }
+      if (channel === "in_app" && Number(p.stock) < it.qty) throw new Error(`Not enough stock for: ${p.name}`);
     }
 
-    // Compute totals using DB price_int snapshots
     let total = 0;
     const itemRows = normalized.map((it) => {
       const p = prodById.get(it.product_id);
@@ -242,7 +465,6 @@ app.post("/api/orders", requireAuth, async (req, res) => {
 
     const status = channel === "whatsapp" ? "pending_whatsapp" : "pending";
 
-    // Create order header
     const { rows: orderIns } = await client.query(
       `INSERT INTO orders(channel, status, customer_name, customer_phone, delivery_location, note, total_int, user_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -261,7 +483,6 @@ app.post("/api/orders", requireAuth, async (req, res) => {
 
     const order = orderIns[0];
 
-    // Insert order items
     for (const it of itemRows) {
       await client.query(
         `INSERT INTO order_items(order_id, product_id, name_snapshot, price_int_snapshot, qty, line_total_int)
@@ -270,21 +491,14 @@ app.post("/api/orders", requireAuth, async (req, res) => {
       );
     }
 
-    // Deduct stock only for in_app orders
     if (channel === "in_app") {
       for (const it of normalized) {
-        await client.query(
-          `UPDATE products
-           SET stock = stock - $1
-           WHERE id=$2`,
-          [it.qty, it.product_id]
-        );
+        await client.query(`UPDATE products SET stock = stock - $1 WHERE id=$2`, [it.qty, it.product_id]);
       }
     }
 
     await client.query("COMMIT");
 
-    // Return order + items
     const { rows: itemsOut } = await pool.query(
       `SELECT product_id, name_snapshot, price_int_snapshot, qty, line_total_int
        FROM order_items
@@ -302,9 +516,6 @@ app.post("/api/orders", requireAuth, async (req, res) => {
   }
 });
 
-/**
- * Customer: list own orders
- */
 app.get("/api/orders/my", requireAuth, async (req, res) => {
   const { rows } = await pool.query(
     `SELECT *
@@ -317,9 +528,6 @@ app.get("/api/orders/my", requireAuth, async (req, res) => {
   res.json({ orders: rows });
 });
 
-/**
- * Admin: list all orders
- */
 app.get("/api/orders", requireAuth, requireAdmin, async (req, res) => {
   const { rows } = await pool.query(
     `SELECT *
@@ -330,9 +538,6 @@ app.get("/api/orders", requireAuth, requireAdmin, async (req, res) => {
   res.json({ orders: rows });
 });
 
-/**
- * Admin: view order items
- */
 app.get("/api/orders/:id", requireAuth, requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const { rows: orders } = await pool.query("SELECT * FROM orders WHERE id=$1", [id]);
@@ -349,11 +554,6 @@ app.get("/api/orders/:id", requireAuth, requireAdmin, async (req, res) => {
   res.json({ order: orders[0], items });
 });
 
-/**
- * Admin: confirm an order.
- * - If channel=whatsapp => deduct stock NOW
- * - If channel=in_app => stock already deducted; only status update
- */
 app.post("/api/orders/:id/confirm", requireAuth, requireAdmin, async (req, res) => {
   const orderId = Number(req.params.id);
 
@@ -361,22 +561,15 @@ app.post("/api/orders/:id/confirm", requireAuth, requireAdmin, async (req, res) 
   try {
     await client.query("BEGIN");
 
-    const { rows: orders } = await client.query(
-      `SELECT * FROM orders WHERE id=$1 FOR UPDATE`,
-      [orderId]
-    );
+    const { rows: orders } = await client.query(`SELECT * FROM orders WHERE id=$1 FOR UPDATE`, [orderId]);
     if (!orders.length) throw new Error("Order not found");
 
     const order = orders[0];
     if (order.status === "cancelled") throw new Error("Order is cancelled");
     if (order.status === "delivered") throw new Error("Order already delivered");
 
-    const { rows: items } = await client.query(
-      `SELECT product_id, qty FROM order_items WHERE order_id=$1`,
-      [orderId]
-    );
+    const { rows: items } = await client.query(`SELECT product_id, qty FROM order_items WHERE order_id=$1`, [orderId]);
 
-    // If WhatsApp order, deduct stock at confirm time
     if (order.channel === "whatsapp") {
       const ids = items.map((x) => Number(x.product_id));
       const { rows: products } = await client.query(
@@ -395,20 +588,11 @@ app.post("/api/orders/:id/confirm", requireAuth, requireAdmin, async (req, res) 
       }
 
       for (const it of items) {
-        await client.query(
-          `UPDATE products SET stock = stock - $1 WHERE id=$2`,
-          [Number(it.qty), Number(it.product_id)]
-        );
+        await client.query(`UPDATE products SET stock = stock - $1 WHERE id=$2`, [Number(it.qty), Number(it.product_id)]);
       }
     }
 
-    const { rows: upd } = await client.query(
-      `UPDATE orders
-       SET status='confirmed'
-       WHERE id=$1
-       RETURNING *`,
-      [orderId]
-    );
+    const { rows: upd } = await client.query(`UPDATE orders SET status='confirmed' WHERE id=$1 RETURNING *`, [orderId]);
 
     await client.query("COMMIT");
     res.json({ order: upd[0] });
@@ -422,28 +606,14 @@ app.post("/api/orders/:id/confirm", requireAuth, requireAdmin, async (req, res) 
 
 app.post("/api/orders/:id/cancel", requireAuth, requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-
-  const { rows } = await pool.query(
-    `UPDATE orders
-     SET status='cancelled'
-     WHERE id=$1
-     RETURNING *`,
-    [id]
-  );
+  const { rows } = await pool.query(`UPDATE orders SET status='cancelled' WHERE id=$1 RETURNING *`, [id]);
   if (!rows.length) return res.status(404).json({ message: "Order not found" });
   res.json({ order: rows[0] });
 });
 
 app.post("/api/orders/:id/deliver", requireAuth, requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-
-  const { rows } = await pool.query(
-    `UPDATE orders
-     SET status='delivered'
-     WHERE id=$1
-     RETURNING *`,
-    [id]
-  );
+  const { rows } = await pool.query(`UPDATE orders SET status='delivered' WHERE id=$1 RETURNING *`, [id]);
   if (!rows.length) return res.status(404).json({ message: "Order not found" });
   res.json({ order: rows[0] });
 });

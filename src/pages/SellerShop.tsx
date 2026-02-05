@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { Link } from "react-router-dom";
-import { listProducts, type Product } from "../api/product.ts";
+import { listProducts, type Product } from "../api/products.ts";
 import { createOrder } from "../api/order";
 
 function formatKsh(amount: number) {

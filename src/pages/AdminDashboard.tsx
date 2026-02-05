@@ -1,3 +1,4 @@
+// src/pages/AdminDashboard.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
@@ -12,7 +13,7 @@ import {
   acknowledgeLowStockAlert,
   type Product,
   type LowStockAlert,
-} from "../api/product.ts";
+} from "../api/products";
 
 import {
   listOrdersAdmin,
@@ -23,7 +24,6 @@ import {
   type Order,
   type OrderItem,
 } from "../api/order";
-
 
 function formatKsh(amount: number) {
   return `KSh ${Number(amount || 0).toLocaleString("en-KE")}`;
@@ -41,7 +41,6 @@ function badge(status: string) {
 export default function AdminDashboard() {
   const { user, isAdmin, logout } = useAuth();
 
-  // Toast
   const [toast, setToast] = useState<string | null>(null);
   const showToast = (msg: string) => {
     setToast(msg);
@@ -49,25 +48,20 @@ export default function AdminDashboard() {
     (showToast as any)._t = window.setTimeout(() => setToast(null), 2500);
   };
 
-  // Products
   const [products, setProducts] = useState<Product[]>([]);
   const [prodLoading, setProdLoading] = useState(true);
 
-  // Create form
   const [name, setName] = useState("");
   const [price, setPrice] = useState<number>(0);
   const [description, setDescription] = useState("");
   const [image, setImage] = useState("");
   const [stock, setStock] = useState<number>(0);
 
-  // Edit modal
   const [editing, setEditing] = useState<Product | null>(null);
 
-  // Low stock alerts
   const [alerts, setAlerts] = useState<LowStockAlert[]>([]);
   const [alertsLoading, setAlertsLoading] = useState(false);
 
-  // Orders
   const [orders, setOrders] = useState<Order[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [openOrder, setOpenOrder] = useState<{ order: Order; items: OrderItem[] } | null>(null);
@@ -78,7 +72,6 @@ export default function AdminDashboard() {
     [products]
   );
 
-  // Loaders
   const refreshProducts = async () => {
     const ps = await listProducts();
     setProducts(ps);
@@ -117,7 +110,6 @@ export default function AdminDashboard() {
     })();
   }, []);
 
-  // Actions
   const createNewProduct = async () => {
     try {
       if (!name.trim()) return showToast("Product name required");
@@ -149,7 +141,7 @@ export default function AdminDashboard() {
     try {
       await updateProduct(editing.id, {
         name: editing.name,
-        price: editing.price_int, // backend expects "price" as number; you made it map to price_int server-side
+        price: editing.price_int, // backend expects "price"
         description: editing.description,
         image: editing.image,
         stock: editing.stock,
@@ -268,7 +260,6 @@ export default function AdminDashboard() {
       )}
 
       <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-        {/* Header */}
         <div className="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5 flex items-center justify-between">
           <div>
             <div className="text-2xl font-extrabold">Admin Dashboard</div>
@@ -295,13 +286,9 @@ export default function AdminDashboard() {
           <div className="flex items-end justify-between gap-3">
             <div>
               <div className="text-xl font-extrabold">Low Stock Alerts</div>
-              <div className="text-sm text-slate-600">Shows alerts created by your backend logic.</div>
+              <div className="text-sm text-slate-600">Alerts trigger when stock ≤ 30% of last restock baseline.</div>
             </div>
-            <button
-              className="px-3 py-2 rounded-xl bg-slate-100 font-bold"
-              onClick={refreshAlerts}
-              disabled={alertsLoading}
-            >
+            <button className="px-3 py-2 rounded-xl bg-slate-100 font-bold" onClick={refreshAlerts} disabled={alertsLoading}>
               {alertsLoading ? "Refreshing..." : "Refresh"}
             </button>
           </div>
@@ -328,10 +315,7 @@ export default function AdminDashboard() {
                       <td className="py-3 pr-3 font-bold text-amber-700">{a.threshold_qty}</td>
                       <td className="py-3 pr-3">{new Date(a.created_at).toLocaleString()}</td>
                       <td className="py-3">
-                        <button
-                          className="px-3 py-2 rounded-xl bg-slate-900 text-white font-bold"
-                          onClick={() => ackAlert(a.id)}
-                        >
+                        <button className="px-3 py-2 rounded-xl bg-slate-900 text-white font-bold" onClick={() => ackAlert(a.id)}>
                           Acknowledge
                         </button>
                       </td>
@@ -347,45 +331,14 @@ export default function AdminDashboard() {
         <div className="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm p-5">
           <div className="text-xl font-extrabold">Create Product</div>
           <div className="grid md:grid-cols-2 gap-3 mt-4">
-            <input
-              className="rounded-xl border border-slate-200 px-3 py-2.5"
-              placeholder="Name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-            <input
-              className="rounded-xl border border-slate-200 px-3 py-2.5"
-              placeholder="Price (KSh)"
-              type="number"
-              value={price}
-              onChange={(e) => setPrice(Number(e.target.value))}
-            />
-            <input
-              className="rounded-xl border border-slate-200 px-3 py-2.5"
-              placeholder="Image URL"
-              value={image}
-              onChange={(e) => setImage(e.target.value)}
-            />
-            <input
-              className="rounded-xl border border-slate-200 px-3 py-2.5"
-              placeholder="Initial stock"
-              type="number"
-              value={stock}
-              onChange={(e) => setStock(Number(e.target.value))}
-            />
-            <textarea
-              className="rounded-xl border border-slate-200 px-3 py-2.5 md:col-span-2"
-              placeholder="Description"
-              rows={3}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
+            <input className="rounded-xl border border-slate-200 px-3 py-2.5" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
+            <input className="rounded-xl border border-slate-200 px-3 py-2.5" placeholder="Price (KSh)" type="number" value={price} onChange={(e) => setPrice(Number(e.target.value))} />
+            <input className="rounded-xl border border-slate-200 px-3 py-2.5" placeholder="Image URL" value={image} onChange={(e) => setImage(e.target.value)} />
+            <input className="rounded-xl border border-slate-200 px-3 py-2.5" placeholder="Initial stock" type="number" value={stock} onChange={(e) => setStock(Number(e.target.value))} />
+            <textarea className="rounded-xl border border-slate-200 px-3 py-2.5 md:col-span-2" placeholder="Description" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
           </div>
 
-          <button
-            className="mt-4 px-4 py-2.5 rounded-xl bg-emerald-600 text-white font-extrabold"
-            onClick={createNewProduct}
-          >
+          <button className="mt-4 px-4 py-2.5 rounded-xl bg-emerald-600 text-white font-extrabold" onClick={createNewProduct}>
             Create Product
           </button>
         </div>
@@ -397,11 +350,7 @@ export default function AdminDashboard() {
               <div className="text-xl font-extrabold">Products</div>
               <div className="text-sm text-slate-600">CRUD + stock controls.</div>
             </div>
-            <button
-              className="px-3 py-2 rounded-xl bg-slate-100 font-bold"
-              onClick={refreshProducts}
-              disabled={prodLoading}
-            >
+            <button className="px-3 py-2 rounded-xl bg-slate-100 font-bold" onClick={refreshProducts} disabled={prodLoading}>
               {prodLoading ? "Loading..." : "Refresh"}
             </button>
           </div>
@@ -431,40 +380,24 @@ export default function AdminDashboard() {
                       <td className="py-3 pr-3">{p.stock}</td>
                       <td className="py-3 pr-3">
                         <div className="flex gap-2">
-                          <button
-                            className="px-3 py-2 rounded-xl bg-slate-900 text-white font-bold"
-                            onClick={() => doAdjustStock(p.id, +1)}
-                          >
+                          <button className="px-3 py-2 rounded-xl bg-slate-900 text-white font-bold" onClick={() => doAdjustStock(p.id, +1)}>
                             +1
                           </button>
-                          <button
-                            className="px-3 py-2 rounded-xl bg-slate-900 text-white font-bold disabled:opacity-50"
-                            disabled={p.stock <= 0}
-                            onClick={() => doAdjustStock(p.id, -1)}
-                          >
+                          <button className="px-3 py-2 rounded-xl bg-slate-900 text-white font-bold disabled:opacity-50" disabled={p.stock <= 0} onClick={() => doAdjustStock(p.id, -1)}>
                             -1
                           </button>
-                          <button
-                            className="px-3 py-2 rounded-xl bg-slate-100 font-bold"
-                            onClick={() => doAdjustStock(p.id, +10)}
-                          >
+                          <button className="px-3 py-2 rounded-xl bg-slate-100 font-bold" onClick={() => doAdjustStock(p.id, +10)}>
                             +10
                           </button>
                         </div>
                       </td>
                       <td className="py-3 pr-3">
-                        <button
-                          className="px-3 py-2 rounded-xl bg-blue-600 text-white font-bold"
-                          onClick={() => setEditing(p)}
-                        >
+                        <button className="px-3 py-2 rounded-xl bg-blue-600 text-white font-bold" onClick={() => setEditing(p)}>
                           Edit
                         </button>
                       </td>
                       <td className="py-3">
-                        <button
-                          className="px-3 py-2 rounded-xl bg-rose-600 text-white font-bold"
-                          onClick={() => softDelete(p.id)}
-                        >
+                        <button className="px-3 py-2 rounded-xl bg-rose-600 text-white font-bold" onClick={() => softDelete(p.id)}>
                           Disable
                         </button>
                       </td>
@@ -473,9 +406,7 @@ export default function AdminDashboard() {
                 </tbody>
               </table>
 
-              <div className="text-xs text-slate-500 mt-3">
-                Tip: A “restock baseline” is updated whenever you increase stock.
-              </div>
+              <div className="text-xs text-slate-500 mt-3">Tip: baseline updates when stock increases (+delta or edit stock higher).</div>
             </div>
           )}
         </div>
@@ -487,11 +418,7 @@ export default function AdminDashboard() {
               <div className="text-xl font-extrabold">Orders</div>
               <div className="text-sm text-slate-600">View and manage customer orders.</div>
             </div>
-            <button
-              className="px-3 py-2 rounded-xl bg-slate-100 font-bold"
-              onClick={refreshOrders}
-              disabled={ordersLoading}
-            >
+            <button className="px-3 py-2 rounded-xl bg-slate-100 font-bold" onClick={refreshOrders} disabled={ordersLoading}>
               {ordersLoading ? "Refreshing..." : "Refresh"}
             </button>
           </div>
@@ -529,10 +456,7 @@ export default function AdminDashboard() {
                       <td className="py-3 pr-3">{o.delivery_location}</td>
                       <td className="py-3 pr-3 font-bold">{formatKsh(o.total_int)}</td>
                       <td className="py-3">
-                        <button
-                          className="px-3 py-2 rounded-xl bg-slate-900 text-white font-bold"
-                          onClick={() => openOrderDetails(o.id)}
-                        >
+                        <button className="px-3 py-2 rounded-xl bg-slate-900 text-white font-bold" onClick={() => openOrderDetails(o.id)}>
                           View
                         </button>
                       </td>
@@ -541,9 +465,7 @@ export default function AdminDashboard() {
                 </tbody>
               </table>
 
-              <div className="text-xs text-slate-500 mt-3">
-                Note: Stock deduction usually happens on Confirm (depending on your backend).
-              </div>
+              <div className="text-xs text-slate-500 mt-3">Note: WhatsApp orders typically deduct stock on Confirm.</div>
             </div>
           )}
         </div>
@@ -561,40 +483,12 @@ export default function AdminDashboard() {
             </div>
 
             <div className="p-5 grid md:grid-cols-2 gap-3">
-              <input
-                className="rounded-xl border border-slate-200 px-3 py-2.5"
-                value={editing.name}
-                onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-              />
-              <input
-                className="rounded-xl border border-slate-200 px-3 py-2.5"
-                type="number"
-                value={editing.price_int}
-                onChange={(e) => setEditing({ ...editing, price_int: Number(e.target.value) })}
-              />
-              <input
-                className="rounded-xl border border-slate-200 px-3 py-2.5 md:col-span-2"
-                placeholder="Image URL"
-                value={editing.image}
-                onChange={(e) => setEditing({ ...editing, image: e.target.value })}
-              />
-              <textarea
-                className="rounded-xl border border-slate-200 px-3 py-2.5 md:col-span-2"
-                rows={3}
-                value={editing.description}
-                onChange={(e) => setEditing({ ...editing, description: e.target.value })}
-              />
-              <input
-                className="rounded-xl border border-slate-200 px-3 py-2.5"
-                type="number"
-                value={editing.stock}
-                onChange={(e) => setEditing({ ...editing, stock: Number(e.target.value) })}
-              />
-              <select
-                className="rounded-xl border border-slate-200 px-3 py-2.5"
-                value={String(editing.is_active)}
-                onChange={(e) => setEditing({ ...editing, is_active: e.target.value === "true" })}
-              >
+              <input className="rounded-xl border border-slate-200 px-3 py-2.5" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+              <input className="rounded-xl border border-slate-200 px-3 py-2.5" type="number" value={editing.price_int} onChange={(e) => setEditing({ ...editing, price_int: Number(e.target.value) })} />
+              <input className="rounded-xl border border-slate-200 px-3 py-2.5 md:col-span-2" placeholder="Image URL" value={editing.image} onChange={(e) => setEditing({ ...editing, image: e.target.value })} />
+              <textarea className="rounded-xl border border-slate-200 px-3 py-2.5 md:col-span-2" rows={3} value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
+              <input className="rounded-xl border border-slate-200 px-3 py-2.5" type="number" value={editing.stock} onChange={(e) => setEditing({ ...editing, stock: Number(e.target.value) })} />
+              <select className="rounded-xl border border-slate-200 px-3 py-2.5" value={String(editing.is_active)} onChange={(e) => setEditing({ ...editing, is_active: e.target.value === "true" })}>
                 <option value="true">Active</option>
                 <option value="false">Inactive</option>
               </select>
@@ -636,18 +530,9 @@ export default function AdminDashboard() {
                 <div className="rounded-2xl bg-slate-50 ring-1 ring-slate-200 p-4">
                   <div className="font-extrabold">Customer</div>
                   <div className="mt-2 text-sm">
-                    <div>
-                      <span className="text-slate-600">Name:</span>{" "}
-                      <b>{openOrder.order.customer_name}</b>
-                    </div>
-                    <div>
-                      <span className="text-slate-600">Phone:</span>{" "}
-                      <b>{openOrder.order.customer_phone}</b>
-                    </div>
-                    <div>
-                      <span className="text-slate-600">Location:</span>{" "}
-                      <b>{openOrder.order.delivery_location}</b>
-                    </div>
+                    <div><span className="text-slate-600">Name:</span> <b>{openOrder.order.customer_name}</b></div>
+                    <div><span className="text-slate-600">Phone:</span> <b>{openOrder.order.customer_phone}</b></div>
+                    <div><span className="text-slate-600">Location:</span> <b>{openOrder.order.delivery_location}</b></div>
                   </div>
                   {openOrder.order.note ? (
                     <div className="mt-3 text-sm">
@@ -662,9 +547,7 @@ export default function AdminDashboard() {
                   <div className="mt-2 space-y-2 text-sm">
                     {openOrder.items.map((it, idx) => (
                       <div key={idx} className="flex justify-between">
-                        <div>
-                          {it.name_snapshot} x{it.qty}
-                        </div>
+                        <div>{it.name_snapshot} x{it.qty}</div>
                         <div className="font-bold">{formatKsh(it.line_total_int)}</div>
                       </div>
                     ))}
@@ -672,34 +555,20 @@ export default function AdminDashboard() {
 
                   <div className="mt-3 border-t border-slate-200 pt-3 flex justify-between">
                     <div className="font-extrabold">Total</div>
-                    <div className="font-extrabold text-blue-700">
-                      {formatKsh(openOrder.order.total_int)}
-                    </div>
+                    <div className="font-extrabold text-blue-700">{formatKsh(openOrder.order.total_int)}</div>
                   </div>
                 </div>
 
                 <div className="md:col-span-2 flex flex-wrap gap-2 justify-end">
-                  <button
-                    className="px-4 py-2.5 rounded-xl bg-rose-600 text-white font-extrabold disabled:opacity-50"
-                    disabled={openOrder.order.status === "cancelled" || openOrder.order.status === "delivered"}
-                    onClick={() => doCancelOrder(openOrder.order.id)}
-                  >
+                  <button className="px-4 py-2.5 rounded-xl bg-rose-600 text-white font-extrabold disabled:opacity-50" disabled={openOrder.order.status === "cancelled" || openOrder.order.status === "delivered"} onClick={() => doCancelOrder(openOrder.order.id)}>
                     Cancel
                   </button>
 
-                  <button
-                    className="px-4 py-2.5 rounded-xl bg-emerald-600 text-white font-extrabold disabled:opacity-50"
-                    disabled={openOrder.order.status === "cancelled" || openOrder.order.status === "delivered"}
-                    onClick={() => doConfirmOrder(openOrder.order.id)}
-                  >
+                  <button className="px-4 py-2.5 rounded-xl bg-emerald-600 text-white font-extrabold disabled:opacity-50" disabled={openOrder.order.status === "cancelled" || openOrder.order.status === "delivered"} onClick={() => doConfirmOrder(openOrder.order.id)}>
                     Confirm
                   </button>
 
-                  <button
-                    className="px-4 py-2.5 rounded-xl bg-blue-600 text-white font-extrabold disabled:opacity-50"
-                    disabled={openOrder.order.status !== "confirmed"}
-                    onClick={() => doDeliverOrder(openOrder.order.id)}
-                  >
+                  <button className="px-4 py-2.5 rounded-xl bg-blue-600 text-white font-extrabold disabled:opacity-50" disabled={openOrder.order.status !== "confirmed"} onClick={() => doDeliverOrder(openOrder.order.id)}>
                     Mark Delivered
                   </button>
                 </div>
