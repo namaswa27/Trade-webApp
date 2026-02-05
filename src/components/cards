@@ -1,0 +1,5 @@
+<div className="rounded-2xl bg-white ring-1 ring-slate-200 shadow-sm
+                hover:shadow-md hover:-translate-y-0.5
+                transition-all">
+  ...
+</div>
